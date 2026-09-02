@@ -1,0 +1,129 @@
+# =============================================================================
+# Sensor profile: Ouster OS1-32 / OS1-64
+# =============================================================================
+# Starting point, not a tuned configuration.
+# =============================================================================
+
+sensor:
+  name: "Ouster OS1-32 / OS1-64"
+  type: "spinning, digital, 865 nm"
+
+  # 32 or 64 beams depending on the variant. This is LIO-SAM's N_SCAN.
+  ring_count: 32                   # use 64 for the OS1-64
+
+  # OS1 has a 45 deg vertical FOV (+/-22.5 deg). Note the sibling models: OS0
+  # is 90 deg (much better vertical observability indoors), OS2 is 22.5 deg
+  # (long range, worse for indoor SLAM).
+  vertical_fov_deg: [-22.5, 22.5]
+
+  # Beam spacing can be uniform or "gradient" depending on the ordering the
+  # unit was built with. The exact per-beam altitude angles are in the sensor's
+  # metadata JSON (beam_altitude_angles). If you re-derive ring indices from
+  # elevation -- slamkit.cloud.assign_rings() -- use those angles, not a
+  # uniform assumption.
+  beam_spacing: "see beam_altitude_angles in the metadata JSON"
+
+  # 10 or 20 Hz, set by lidar_mode.
+  scan_rate_hz: 10.0
+
+  # 512, 1024 or 2048 columns, set by lidar_mode (e.g. 1024x10). This is
+  # LIO-SAM's Horizon_SCAN and it must match the mode exactly.
+  horizontal_samples: 1024
+
+  range_m: [0.3, 120.0]
+
+  # Built-in IMU: ICM-20948, published on /ouster/imu.
+  builtin_imu:
+    rate_hz: 100
+    frame: "os_imu"
+    note: |
+      100 Hz is BELOW what LIO-SAM wants (it expects >= 200 Hz and warns
+      otherwise). It is usable but it is not a good LiDAR-inertial IMU. If the
+      map lags on fast turns, this is a real contributing cause and no
+      parameter will fix it -- add an external 200-400 Hz IMU.
+
+  # ---------------------------------------------------------------------------
+  # Per-point fields
+  # ---------------------------------------------------------------------------
+  point_fields:
+    ring:
+      name: "ring"
+      datatype: "uint16"
+    timestamp:
+      name: "t"
+      datatype: "uint32"
+      units: "nanoseconds"
+      datum: "relative to the scan start (header.stamp)"
+      note: |
+        NANOSECONDS, not seconds, and the field is called `t`, not `time`.
+
+        GOTCHA: uint32 nanoseconds wraps at 4.29 seconds. That is fine for one
+        sweep, but it means you cannot treat the field as an absolute time.
+
+        If a pipeline written for Velodyne reads `t` as float seconds, a value
+        of 50,000,000 (= 50 ms) becomes 50 million seconds and the deskewing
+        stage produces a cloud scattered across the solar system -- or, more
+        commonly, the field name does not match, deskewing is silently skipped,
+        and you get a smeared cloud with no error at all.
+
+        slamkit.cloud.detect_timestamp_format() identifies which unit you
+        actually have from the span of the values.
+
+# -----------------------------------------------------------------------------
+# THE OUSTER GOTCHA
+# -----------------------------------------------------------------------------
+# 1. TIMESTAMP MODE. The `timestamp_mode` parameter decides what clock the
+#    sensor stamps with:
+#      TIME_FROM_INTERNAL_OSC   -- the sensor's own free-running clock, which
+#                                  starts at 0 on power-up and has NOTHING to do
+#                                  with your host clock. header.stamp will be
+#                                  somewhere in 1970 and every TF lookup fails.
+#      TIME_FROM_SYNC_PULSE_IN  -- disciplined by an external PPS.
+#      TIME_FROM_PTP_1588       -- disciplined by PTP over the data Ethernet
+#                                  link. This is the one you want; it is also
+#                                  the only one that keeps working over hours,
+#                                  because it corrects drift as well as offset.
+#    Symptom of getting this wrong: "works with the bag, fails live", or TF
+#    errors about times far in the past or future.
+#
+# 2. THREE FRAMES, TWO EXTRINSICS. The driver publishes os_sensor, os_lidar and
+#    os_imu. The lidar frame is rotated 180 deg about Z relative to the sensor
+#    frame, and the IMU sits at a small offset from both. The exact transforms
+#    are in the metadata JSON (lidar_to_sensor_transform,
+#    imu_to_sensor_transform) and the driver publishes them on TF.
+#
+#    GOTCHA: people take the IMU-to-LiDAR extrinsic to be identity because both
+#    are "inside the same sensor". It is not identity -- there is a 180 deg yaw
+#    between os_lidar and os_sensor, and the IMU is referenced to os_sensor.
+#    Get this wrong and you have exactly the transposed/rotated-extrinsic
+#    failure: the map rotates about the wrong axis when you turn.
+#    Cross-check with slamkit.extrinsics.check_transposed_rotation() against a
+#    data-derived estimate before you trust any hand-written matrix.
+#
+# 3. NEAR-RANGE NOISE. Below ~0.5 m the OS1 produces a ring of low-quality
+#    returns off its own housing and any nearby mount. Set lidarMinRange to at
+#    least 1.0 m or the scan matcher will lock onto your own robot.
+# -----------------------------------------------------------------------------
+
+lio_sam:
+  sensor: ouster
+  N_SCAN: 32                  # 64 for the OS1-64
+  Horizon_SCAN: 1024          # must match lidar_mode
+  downsampleRate: 1           # raise to 2 on the OS1-64 if CPU-bound
+  lidarMinRange: 1.0
+  lidarMaxRange: 100.0
+  odometrySurfLeafSize: 0.4
+  mappingCornerLeafSize: 0.2
+  mappingSurfLeafSize: 0.4
+  # The built-in IMU is only 100 Hz. If you use it, say so honestly:
+  imuFrequency: 100
+  # ...and expect to raise the noise densities, because the ICM-20948 is not a
+  # tactical-grade part. Measure them; do not copy someone else's numbers.
+
+cartographer_3d:
+  TRAJECTORY_BUILDER_3D.submaps.high_resolution: 0.10
+  TRAJECTORY_BUILDER_3D.submaps.low_resolution: 0.45
+  TRAJECTORY_BUILDER_3D.min_range: 1.0
+  TRAJECTORY_BUILDER_3D.max_range: 80.0
+  options.num_subdivisions_per_laser_scan: 10
+  options.tracking_frame: "os_imu"   # MUST be the IMU frame in 3D

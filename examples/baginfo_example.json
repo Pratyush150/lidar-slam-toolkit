@@ -1,0 +1,20 @@
+{
+  "path": "my_bag",
+  "duration_s": 182.4,
+  "message_count": 40128,
+  "topics": [
+    {"name": "/points",      "type": "sensor_msgs/msg/PointCloud2", "count": 1824},
+    {"name": "/imu/data",    "type": "sensor_msgs/msg/Imu",         "count": 36480},
+    {"name": "/odom",        "type": "nav_msgs/msg/Odometry",       "count": 1824}
+  ],
+  "frame_ids": {
+    "/points":   "velodyne",
+    "/imu/data": "imu_link",
+    "/odom":     "odom"
+  },
+  "tf": [
+    {"parent": "base_link", "child": "velodyne",  "static": true},
+    {"parent": "base_link", "child": "imu_link",  "static": true},
+    {"parent": "odom",      "child": "base_link", "static": false}
+  ]
+}

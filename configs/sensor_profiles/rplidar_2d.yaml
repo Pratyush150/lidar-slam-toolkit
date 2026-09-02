@@ -1,0 +1,126 @@
+# =============================================================================
+# Sensor profile: RPLIDAR (A1 / A2 / A3 / S1) -- 2D
+# =============================================================================
+# A single-plane rotating rangefinder publishing sensor_msgs/LaserScan.
+# Use with Cartographer 2D or slam_toolbox. It cannot do 3D SLAM and no amount
+# of configuration will change that.
+# =============================================================================
+
+sensor:
+  name: "Slamtec RPLIDAR A2M8 (values for other models noted inline)"
+  type: "2D triangulation rangefinder (A1/A2/A3) or TOF (S1/S2)"
+
+  # ONE plane. There is no ring field and no ring concept.
+  ring_count: 1
+
+  # A1: 5.5 Hz nominal. A2: 10 Hz, configurable 5-15. A3: 10-20 Hz.
+  # S1: 10 Hz TOF.
+  # GOTCHA: the motor is PWM-driven and open-loop on the A-series. The actual
+  # rate sags under load, with a low battery, or when the bearing gets dusty.
+  # Anything that assumes a fixed scan_time is then wrong by a few percent.
+  scan_rate_hz: 10.0
+
+  # Samples per second: A1 8000, A2M8 8000 (16000 in express mode), A3 16000,
+  # S1 9200. Points per scan = samples_per_second / scan_rate.
+  samples_per_second: 8000
+  points_per_scan: 800
+  angular_resolution_deg: 0.45
+
+  # A1 12 m, A2 16 m, A3 25 m, S1 40 m. Triangulation units lose accuracy
+  # quickly with range and are badly affected by bright sunlight.
+  range_m: [0.15, 16.0]
+
+  # ---------------------------------------------------------------------------
+  # Timestamps -- LaserScan has no per-point time field
+  # ---------------------------------------------------------------------------
+  point_fields:
+    ring: null
+    timestamp:
+      name: "time_increment (LaserScan field, not a per-point field)"
+      datatype: "float32"
+      units: "seconds between consecutive samples"
+      note: |
+        sensor_msgs/LaserScan carries `scan_time` (seconds for a full
+        revolution) and `time_increment` (seconds between adjacent samples).
+        Together they are the only motion-compensation information available.
+
+        GOTCHA: several rplidar_ros forks publish time_increment = 0 or set
+        scan_time from a hard-coded nominal rate rather than measuring it.
+        Cartographer uses these fields to un-distort the scan; with zeros, it
+        treats the whole 100 ms revolution as instantaneous.
+
+        Symptom: walls come out curved on every turn, and the curvature reverses
+        when you turn the other way. It looks like a calibration problem and is
+        not. Check with:
+          ros2 topic echo --once /scan --field time_increment
+        If it is 0, either fix the driver or raise
+        num_subdivisions_per_laser_scan in Cartographer so each fragment gets
+        its own pose.
+
+# -----------------------------------------------------------------------------
+# THE RPLIDAR GOTCHA
+# -----------------------------------------------------------------------------
+# ROTATION DIRECTION AND THE MIRRORED MAP.
+#
+# The RPLIDAR spins clockwise when viewed from above, while ROS's LaserScan
+# convention has angles increasing counter-clockwise (REP-103: right-handed, Z
+# up). Different driver versions and different `inverted` / `angle_compensate`
+# parameter settings resolve this differently.
+#
+# Symptom: the map is MIRRORED. The robot turns left and the map turns right.
+# In a symmetric room this is nearly invisible until you try to navigate; in an
+# asymmetric one it is obvious as soon as you look. Loop closure still fires,
+# because a mirrored map is self-consistent -- which is why people spend a day
+# tuning the loop-closure parameters first.
+#
+# Check: put a single distinctive object (a chair) at a known bearing, drive
+# nothing, and confirm it appears on the correct side in RViz. Two minutes.
+#
+# Fix: the driver's `inverted` parameter, or reverse the ranges array. Do NOT
+# "fix" it by negating a rotation matrix somewhere downstream -- that gives you
+# det(R) = -1 and a genuinely left-handed transform, which
+# slamkit.extrinsics.check_handedness() flags as CRITICAL for good reason.
+#
+# SECOND GOTCHA: USB SERIAL LATENCY AND STAMPS.
+# The A-series is a USB-serial device. The driver stamps a scan when the last
+# byte of it arrives, so header.stamp includes USB scheduling latency -- several
+# milliseconds, and variable. slamkit.timesync.detect_jitter() on the scan
+# stamps will show it. For 2D SLAM on a slow robot this is tolerable; if you
+# fuse with an IMU it is not.
+#
+# THIRD GOTCHA: THE SCAN PLANE IS A PLANE.
+# On a ramp, over a threshold, or on a robot that pitches under acceleration,
+# the scan plane tilts and the measured ranges to a wall change. Cartographer 2D
+# interprets that as the wall moving. Symptom: the map "breathes" -- walls
+# expand and contract as the robot accelerates. There is no parameter for this;
+# either the platform stays level or you need 3D.
+# -----------------------------------------------------------------------------
+
+cartographer_2d:
+  options.num_laser_scans: 1
+  options.num_point_clouds: 0
+  # Raise this if time_increment is unreliable or the robot turns fast: each
+  # subdivision gets its own interpolated pose.
+  options.num_subdivisions_per_laser_scan: 1
+  # No IMU on the sensor. If the robot has one, use it and set tracking_frame
+  # to the IMU frame; if not, set use_imu_data false and tracking_frame to
+  # base_link.
+  TRAJECTORY_BUILDER_2D.use_imu_data: false
+  TRAJECTORY_BUILDER_2D.min_range: 0.15    # above the sensor's own minimum
+  TRAJECTORY_BUILDER_2D.max_range: 12.0    # below the spec maximum; the last
+                                           # few metres are noisy on a
+                                           # triangulation unit
+  TRAJECTORY_BUILDER_2D.missing_data_ray_length: 5.0
+  TRAJECTORY_BUILDER_2D.voxel_filter_size: 0.025
+  # 800 points per scan is not many. Turn the correlative matcher on; without
+  # odometry you need it.
+  TRAJECTORY_BUILDER_2D.use_online_correlative_scan_matching: true
+  TRAJECTORY_BUILDER_2D.submaps.num_range_data: 90
+  TRAJECTORY_BUILDER_2D.submaps.grid_options_2d.resolution: 0.05
+
+notes:
+  not_suitable_for: |
+    3D mapping, LiDAR-inertial odometry, outdoor use in direct sunlight
+    (the A-series triangulation units lose returns badly above ~2000 lux on
+    dark surfaces), and any platform that pitches or rolls more than a few
+    degrees.

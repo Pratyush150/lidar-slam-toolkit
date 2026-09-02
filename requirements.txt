@@ -1,0 +1,6 @@
+# Runtime: numpy only. Everything in slamkit/ is pure numpy + stdlib so the
+# diagnostics run on a laptop with no ROS 2 installation.
+numpy>=1.21
+
+# Development / test
+pytest>=7.0

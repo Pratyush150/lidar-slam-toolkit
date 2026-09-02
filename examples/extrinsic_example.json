@@ -1,0 +1,5 @@
+{
+  "_comment": "Feed this to `slam-doctor --extrinsic`. Either give a 9-element row-major rotation, or {\"rpy\": [r, p, y], \"degrees\": true}. Translation is metres, LiDAR origin to IMU origin.",
+  "rotation": {"rpy": [0.0, 0.0, 90.0], "degrees": true},
+  "translation": [0.12, 0.0, -0.05]
+}

@@ -1,0 +1,445 @@
+# =============================================================================
+# LIO-SAM reference parameters -- annotated
+# =============================================================================
+# Every parameter carries: what it does, and what breaks if you get it wrong.
+#
+# This file uses the ROS 2 layout. The ROS 2 branch of LIO-SAM loads under the
+# wildcard node key:
+#
+#     /**:
+#       ros__parameters:
+#         ...
+#
+# On ROS 1 the same names live under a plain `lio_sam:` mapping with no
+# `ros__parameters` level. If your parameters "have no effect", check this
+# first: a mis-nested YAML silently leaves every parameter at its compiled-in
+# default, and LIO-SAM does not warn about it.
+#
+# Values below are a working starting point for a Velodyne VLP-16 plus a 200 Hz
+# 6-axis IMU on a small ground robot. See ../sensor_profiles/ for per-sensor
+# starting points. Do not treat any number here as tuned for your platform.
+# =============================================================================
+
+/**:
+  ros__parameters:
+
+    # -------------------------------------------------------------------------
+    # Topics
+    # -------------------------------------------------------------------------
+    # Input point cloud (sensor_msgs/PointCloud2).
+    # WRONG: node starts, subscribes, and never receives a callback. There is no
+    # error message -- subscribing to a topic nobody publishes is legal. Check
+    # with `ros2 topic list` and remember a launch-file remap overrides this.
+    pointCloudTopic: "points"
+
+    # Input IMU (sensor_msgs/Imu), in the IMU's own frame.
+    # WRONG: same silent failure. Also check you are not pointing at a filtered
+    # /imu/data topic that a madgwick filter republishes at a lower rate.
+    imuTopic: "imu/data"
+
+    # Odometry topic LIO-SAM *publishes* for the IMU-rate pose.
+    odomTopic: "odometry/imu"
+
+    # GPS/GNSS odometry input (nav_msgs/Odometry, from robot_localization's
+    # navsat_transform). Only used when GPS factors are enabled below.
+    gpsTopic: "odometry/gpsz"
+
+    # -------------------------------------------------------------------------
+    # Frames
+    # -------------------------------------------------------------------------
+    # Frame the incoming cloud is expressed in. Must match header.frame_id of
+    # pointCloudTopic exactly.
+    # WRONG: TF lookups fail, or -- worse -- succeed against a frame that exists
+    # but is not the sensor, so the extrinsic silently becomes something else.
+    lidarFrame: "base_link"
+
+    # Robot body frame that the published odometry refers to.
+    # WRONG: your navigation stack drives the LiDAR around instead of the robot;
+    # every commanded motion is offset by the sensor lever arm.
+    baselinkFrame: "base_link"
+
+    # Frame the odometry is published in (parent of baselinkFrame).
+    odometryFrame: "odom"
+
+    # Global map frame (parent of odometryFrame).
+    mapFrame: "map"
+
+    # -------------------------------------------------------------------------
+    # GPS settings
+    # -------------------------------------------------------------------------
+    # Initialise map heading from the IMU's magnetometer-derived yaw. Requires a
+    # 9-axis IMU whose orientation field is actually populated and actually
+    # north-referenced.
+    # WRONG: with a 6-axis IMU the orientation quaternion is either identity or
+    # garbage, and the map starts at a random heading that never converges.
+    useImuHeadingInitialization: false
+
+    # Use GPS altitude as the z measurement.
+    # WRONG: consumer GNSS altitude is 2-3x worse than its horizontal fix.
+    # Turning this on to "fix z drift" usually makes z worse and noisier. Fix
+    # the attitude first (see docs/SLAM_DEBUGGING.md).
+    useGpsElevation: false
+
+    # Reject GPS fixes whose reported covariance exceeds this (m^2).
+    # WRONG (too high): urban-canyon multipath fixes get pulled into the graph
+    # and yank the map sideways by metres.
+    # WRONG (too low): no GPS factor is ever added and you wonder why the drift
+    # is unbounded.
+    gpsCovThreshold: 2.0
+
+    # Only add a GPS factor when the SLAM pose covariance is worse than this,
+    # i.e. only when LiDAR odometry has already become uncertain.
+    # WRONG (too low): GPS constantly fights a perfectly good LiDAR solution.
+    poseCovThreshold: 25.0
+
+    # -------------------------------------------------------------------------
+    # Export
+    # -------------------------------------------------------------------------
+    # Save the assembled map to PCD when the node shuts down.
+    # WRONG (true on a long run): tens of GB written on exit and an apparent
+    # "hang" during shutdown.
+    savePCD: false
+    savePCDDirectory: "/Downloads/LOAM/"
+
+    # -------------------------------------------------------------------------
+    # Sensor geometry
+    # -------------------------------------------------------------------------
+    # Driver family: velodyne | ouster | livox. Selects how the ring and
+    # per-point time fields are read.
+    # WRONG: the deskewing stage reads the wrong field. Ouster's `t` is uint32
+    # nanoseconds; Velodyne's `time` is float32 seconds. Read one as the other
+    # and you get either no deskewing at all or a cloud sheared into a fan.
+    sensor: velodyne
+
+    # Number of laser rings. 16/32/64/128.
+    # WRONG (too small): the top rings are discarded, so you lose the long-range
+    # structure that constrains yaw, and the map rotates freely in open areas.
+    # WRONG (too large): feature extraction indexes past the end of the range
+    # image; you get either a crash or rows of zeros treated as real returns.
+    N_SCAN: 16
+
+    # Points per ring per revolution. 1800 for a 10 Hz Velodyne at 0.2 deg
+    # azimuth resolution; 2048 for Ouster; 1024 for a low-res mode.
+    # WRONG: the range image is stretched or compressed in azimuth, so the
+    # curvature computed along a ring is wrong and edge/plane classification
+    # falls apart. Symptom: "not enough features" or an unstable map.
+    Horizon_SCAN: 1800
+
+    # Keep every Nth ring (1 = keep all).
+    # WRONG (too aggressive): on a 16-beam sensor there is nothing to spare.
+    # Only raise this on 64/128-beam sensors that are saturating the CPU.
+    downsampleRate: 1
+
+    # Discard returns closer than this (m). Removes the robot's own body, the
+    # near-field bloom, and the ghost ring some sensors emit.
+    # WRONG (too small): your own chassis is mapped as a static object that
+    # follows the robot, and scan matching happily locks onto it -- the map then
+    # stops moving while the robot drives away.
+    lidarMinRange: 1.0
+
+    # Discard returns beyond this (m).
+    # WRONG (too small): in a corridor or a large hall you throw away the only
+    # geometry that constrains motion along the axis. See slamkit.degeneracy.
+    # WRONG (too large): distant sparse returns with high angular error add
+    # noise to the plane fits.
+    lidarMaxRange: 1000.0
+
+    # -------------------------------------------------------------------------
+    # IMU noise model
+    # -------------------------------------------------------------------------
+    # These are continuous-time noise densities for GTSAM's preintegration.
+    # Get them from an Allan-variance plot of 2+ hours of stationary data, not
+    # from the datasheet's "typical" column.
+    #
+    # Accelerometer white noise, m/s^2/sqrt(Hz).
+    # WRONG (too small): the estimator believes the IMU absolutely, so it forces
+    # the scan matcher to agree; on any IMU error the map jerks.
+    # WRONG (too large): the IMU contributes nothing and you have an expensive
+    # LiDAR-only system that drifts in corridors.
+    imuAccNoise: 3.9939570888238808e-03
+
+    # Gyroscope white noise, rad/s/sqrt(Hz). Same trade-off as above; this one
+    # dominates behaviour during rotation.
+    imuGyrNoise: 1.5636343949698187e-03
+
+    # Accelerometer bias random walk, m/s^2/sqrt(Hz^3).
+    # WRONG (too small): the bias state is frozen. If the true bias changes with
+    # temperature -- and it does -- the residual is absorbed as tilt, and z
+    # drifts steadily. This is a top-three cause of "the map floats upward".
+    # WRONG (too large): the bias state chases every scan-matching residual, so
+    # a bad extrinsic or a time offset gets laundered into "bias" and the
+    # gravity direction goes with it.
+    imuAccBiasN: 6.4356659353532566e-05
+
+    # Gyroscope bias random walk, rad/s/sqrt(Hz^3). Same trade-off.
+    imuGyrBiasN: 3.5640318696367613e-05
+
+    # Local gravity magnitude, m/s^2. 9.79-9.83 depending on latitude/altitude.
+    # WRONG: a 0.02 m/s^2 error is a constant vertical acceleration bias. Over
+    # 8 s of open-loop integration that is ~0.6 m of z error. The estimator
+    # partly absorbs it into accel bias, which then corrupts the tilt estimate.
+    imuGravity: 9.80511
+
+    # Weight given to the IMU's roll/pitch when fusing with the scan matcher,
+    # 0..1. Only meaningful for a 9-axis IMU publishing a valid orientation.
+    # WRONG (0 with a good IMU): nothing anchors the map to gravity, so the map
+    # slowly tilts and z drifts with distance travelled.
+    # WRONG (1 with a bad/6-axis IMU): you force the map to follow a garbage
+    # orientation. With a 6-axis IMU, keep this low and let preintegration do
+    # the work.
+    imuRPYWeight: 0.01
+
+    # IMU output rate, Hz. Used to size preintegration buffers.
+    # WRONG: LIO-SAM expects >= 200 Hz. Below ~100 Hz, rotation between scans is
+    # under-integrated and the map lags on every turn.
+    imuFrequency: 200
+
+    # =========================================================================
+    # EXTRINSICS -- read this section before you touch it
+    # =========================================================================
+    # This is where nearly everyone breaks LIO-SAM. Three fields, one direction
+    # convention, and no runtime check.
+    #
+    # WHAT LIO-SAM ACTUALLY DOES
+    # --------------------------
+    # In `imuConverter()` the raw IMU vectors are rotated:
+    #
+    #     acc_out = extRot * acc_in
+    #     gyr_out = extRot * gyr_in
+    #     q_out   = q_in * extQRPY          (extQRPY built from extrinsicRPY)
+    #
+    # So:
+    #
+    #   extrinsicRot  =  R_lidar_from_imu
+    #
+    # It takes a vector expressed in the IMU frame and expresses it in the
+    # LiDAR frame. If you can state your measurement as "the IMU's +X axis
+    # points along the LiDAR's +Y axis", then the FIRST COLUMN of extrinsicRot
+    # is the IMU's X axis written in LiDAR coordinates: [0, 1, 0].
+    # Columns are IMU axes in LiDAR coordinates. Rows are LiDAR axes in IMU
+    # coordinates. If you find yourself unsure which, you are one transpose away
+    # from a broken map -- see below.
+    #
+    # WHY extrinsicRPY IS SEPARATE
+    # ----------------------------
+    # extrinsicRot rotates the *measurement vectors* (acceleration, angular
+    # rate). extrinsicRPY rotates the *orientation quaternion* that a 9-axis IMU
+    # publishes. For most IMUs both describe the same physical mount and the two
+    # matrices are IDENTICAL. The upstream repo ships them different because
+    # their specific unit reports orientation in a differently-aligned frame.
+    #
+    # RULE: unless you have verified otherwise for your exact IMU, set
+    # extrinsicRPY = extrinsicRot. If you use a 6-axis IMU, extrinsicRPY is
+    # irrelevant (there is no orientation to rotate) -- set it equal anyway so
+    # the next person is not misled.
+    #
+    # WRONG (RPY != Rot without reason): orientation and acceleration disagree
+    # about which way is up. Gravity is subtracted in the wrong direction, so
+    # the estimator sees a constant horizontal acceleration and the trajectory
+    # curves away in a slow arc.
+    #
+    # THE FOUR CLASSIC ERRORS
+    # -----------------------
+    # 1. TRANSPOSED. You wrote R_imu_from_lidar. Both matrices are valid
+    #    rotations so nothing complains.
+    #    Symptom: yaw the robot and the map pitches or rolls; driving straight
+    #    looks fine. Walls duplicate at every corner, and the duplication grows
+    #    with how much you turned.
+    #    Note: for a 0 deg or 180 deg mount a matrix equals its own transpose,
+    #    which is why this bug survives the bench test and appears on the robot.
+    #    Check: slamkit.extrinsics.check_transposed_rotation()
+    #
+    # 2. DEGREES IN A RADIAN FIELD. `[0, 0, 90]` is 90 radians = 5156 degrees.
+    #    Symptom: the map is rotated by an arbitrary-looking angle, the floor
+    #    comes out tilted, z drifts.
+    #    Check: slamkit.extrinsics.check_degrees_as_radians()
+    #
+    # 3. TRANSLATION IN THE WRONG DIRECTION. You measured "the IMU is 12 cm
+    #    behind the LiDAR" and typed +0.12 into a field defined the other way.
+    #    Reversing a transform is NOT just negating t: t_b_a = -R_a_b^T t_a_b.
+    #    Symptom: the map shears while translating and doubles while rotating,
+    #    separated by about twice the lever arm. Stationary it is perfect.
+    #    Check: slamkit.extrinsics.check_translation_direction()
+    #
+    # 4. LEFT-HANDED AXES. Someone negated an axis to "make it look right", or
+    #    transcribed a Z-down vendor drawing into a Z-up REP-103 frame, giving
+    #    det(R) = -1.
+    #    Symptom: the map is mirrored. Turning left moves the robot right, and
+    #    loop closure never matches because the revisited geometry is flipped.
+    #    Check: slamkit.extrinsics.check_handedness()
+    #
+    # HOW TO VERIFY IN 30 SECONDS
+    # ---------------------------
+    # Rotate the robot slowly about +Z (yaw left). Plot the IMU gyro Z after
+    # conversion. It must be positive. Then pitch the nose up: converted gyro Y
+    # must be negative (REP-103: right-handed, X forward, Y left, Z up).
+    # If the axes are right but a sign is inverted, you are transposed.
+    #
+    # LEVER ARM CAVEAT
+    # ----------------
+    # The reference LIO-SAM implementation applies extrinsicRot to the IMU
+    # vectors but does NOT compensate the lever arm (the centripetal term
+    # omega x (omega x r)) in imuConverter. Check your fork before relying on
+    # extrinsicTrans to correct a large offset. Practically: mount the IMU as
+    # close to the LiDAR optical centre as you can. At a 0.3 m lever arm and
+    # 2 rad/s of yaw, the uncompensated centripetal acceleration is 1.2 m/s^2 --
+    # about 12% of gravity, and it looks exactly like an accelerometer bias.
+    # -------------------------------------------------------------------------
+
+    # Translation from the LiDAR origin to the IMU origin, metres, REP-103.
+    # Sanity-check the magnitude: values above ~2 m on a small robot are almost
+    # always millimetres typed into a metres field.
+    extrinsicTrans: [0.0, 0.0, 0.0]
+
+    # R_lidar_from_imu, row-major, 9 entries. Identity means "the IMU is mounted
+    # in exactly the same orientation as the LiDAR".
+    # Generate it, do not type it: slamkit.extrinsics.euler_to_matrix([r,p,y]).
+    # A hand-typed matrix rounded to 3 decimals is not orthonormal, and the
+    # scale error that introduces shows up as map scale drift.
+    extrinsicRot: [1.0,  0.0,  0.0,
+                   0.0,  1.0,  0.0,
+                   0.0,  0.0,  1.0]
+
+    # Rotation applied to a 9-axis IMU's orientation quaternion.
+    # Set equal to extrinsicRot unless you have positively verified otherwise.
+    extrinsicRPY: [1.0,  0.0,  0.0,
+                   0.0,  1.0,  0.0,
+                   0.0,  0.0,  1.0]
+
+    # -------------------------------------------------------------------------
+    # LOAM feature extraction
+    # -------------------------------------------------------------------------
+    # Curvature above this marks a point as an edge feature.
+    # WRONG (too low): noise becomes "edges"; matching drifts because it is
+    # locking onto range noise instead of structure.
+    # WRONG (too high): almost no edges survive, so yaw and lateral position
+    # lose their strongest constraint -- the classic "map spins in a corridor".
+    edgeThreshold: 1.0
+
+    # Curvature below this marks a point as a planar feature.
+    # WRONG (too high): curved and cluttered surfaces get called planes and the
+    # point-to-plane residuals become meaningless.
+    surfThreshold: 0.1
+
+    # Minimum edge features required to attempt a scan match.
+    # WRONG (too low): the optimiser runs on 3 features and produces confident
+    # nonsense.
+    edgeFeatureMinValidNum: 10
+
+    # Minimum planar features required.
+    surfFeatureMinValidNum: 100
+
+    # -------------------------------------------------------------------------
+    # Voxel filter sizes (metres)
+    # -------------------------------------------------------------------------
+    # Downsampling of the current scan's surface features before matching.
+    # WRONG (too large): thin structures -- door frames, poles, railings --
+    # disappear, and with them the rotational constraint.
+    # WRONG (too small): the mapping thread misses real time, scans queue, the
+    # estimator extrapolates, and it looks like an IMU problem.
+    odometrySurfLeafSize: 0.4
+
+    # Corner-feature voxel size for the global map.
+    mappingCornerLeafSize: 0.2
+
+    # Surface-feature voxel size for the global map.
+    # Rule of thumb: 0.2-0.4 indoors, 0.4-0.8 outdoors. Both leaf sizes should
+    # be at least 2x your sensor's range noise or you are voxelising noise.
+    mappingSurfLeafSize: 0.4
+
+    # -------------------------------------------------------------------------
+    # Motion clamps (note the upstream misspelling of "tolerance")
+    # -------------------------------------------------------------------------
+    # Maximum |z| the optimiser is allowed to move to (metres). 1000 = disabled.
+    # WRONG (small, e.g. 0.1, on a flying or climbing platform): the estimate is
+    # clamped, the pose graph fights the clamp, and z comes out as a staircase
+    # of discrete steps. slamkit.drift.analyze_z_drift() reports that shape as
+    # "steps" rather than "ramp" -- if you see steps, check this first.
+    z_tollerance: 1000.0
+
+    # Maximum roll/pitch magnitude allowed (radians). 1000 = disabled.
+    # Only clamp this on a strictly planar ground robot.
+    rotation_tollerance: 1000.0
+
+    # -------------------------------------------------------------------------
+    # CPU
+    # -------------------------------------------------------------------------
+    # Threads for the mapping optimisation.
+    # WRONG (more than physical cores): context switching makes it slower, and
+    # on a Jetson it starves the LiDAR driver, causing dropped scans.
+    numberOfCores: 4
+
+    # Minimum seconds between map optimisations. 0.15 = at most ~6.7 Hz.
+    # WRONG (too small): the mapping thread saturates and falls behind.
+    # WRONG (too large): the map lags the robot visibly during fast motion.
+    mappingProcessInterval: 0.15
+
+    # -------------------------------------------------------------------------
+    # Keyframes and the surrounding map
+    # -------------------------------------------------------------------------
+    # Add a keyframe after this much translation (m).
+    # WRONG (too large): sparse graph, weak loop closure, visible seams.
+    # WRONG (too small): the graph explodes and optimisation slows to a crawl.
+    surroundingkeyframeAddingDistThreshold: 1.0
+
+    # Add a keyframe after this much rotation (rad). 0.2 rad = 11.5 deg.
+    # WRONG (too large): a fast turn between keyframes is unconstrained, which
+    # is where most "the map ghosted at the corner" reports come from.
+    surroundingkeyframeAddingAngleThreshold: 0.2
+
+    # Voxel size for downsampling the set of surrounding keyframe poses (m).
+    surroundingKeyframeDensity: 2.0
+
+    # Radius of keyframes assembled into the local map for scan matching (m).
+    # WRONG (too small): in a large open space the local map has no structure
+    # and matching becomes unconstrained.
+    # WRONG (too large): the local map is huge and matching slows down; on a
+    # Jetson this alone can push you out of real time.
+    surroundingKeyframeSearchRadius: 50.0
+
+    # -------------------------------------------------------------------------
+    # Loop closure
+    # -------------------------------------------------------------------------
+    # Enable the loop-closure thread.
+    # WRONG (false): drift is unbounded by design. If your complaint is "loop
+    # closure never fires", check this before anything else -- it is off by
+    # default in some forks.
+    loopClosureEnableFlag: true
+
+    # How often the loop-closure thread runs, Hz.
+    loopClosureFrequency: 1.0
+
+    # Number of recent keyframes considered for a loop candidate.
+    surroundingKeyframeSize: 50
+
+    # Search radius for loop candidates (m).
+    # WRONG (smaller than your accumulated drift): the true match is outside the
+    # radius, so loop closure genuinely can never fire. If you have 3 m of drift
+    # and a 15 m radius, this is not your problem; if you have 30 m of drift, it
+    # is. Measure the drift first (slamkit.drift.revisit_consistency).
+    historyKeyframeSearchRadius: 15.0
+
+    # A loop candidate must be at least this old, seconds.
+    # WRONG (too small): it "closes" against the keyframe it just made, which
+    # constrains nothing and wastes CPU.
+    historyKeyframeSearchTimeDiff: 30.0
+
+    # Keyframes fused on each side to build the submaps that are ICP-matched.
+    historyKeyframeSearchNum: 25
+
+    # ICP fitness score a loop candidate must beat to be accepted. LOWER IS
+    # STRICTER (it is a mean squared distance).
+    # WRONG (too strict, e.g. 0.1): no loop is ever accepted. This is the #1
+    # cause of "loop closure never fires" after the enable flag.
+    # WRONG (too loose, e.g. 1.0): a false loop is accepted and the pose graph
+    # folds the map onto itself. Unrecoverable -- the map is destroyed in one
+    # optimisation step.
+    historyKeyframeFitnessScore: 0.3
+
+    # -------------------------------------------------------------------------
+    # Visualisation only -- has no effect on the estimate
+    # -------------------------------------------------------------------------
+    # If RViz is choking, change these, not the mapping parameters above.
+    globalMapVisualizationSearchRadius: 1000.0
+    globalMapVisualizationPoseDensity: 10.0
+    globalMapVisualizationLeafSize: 1.0

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slamkit"
+version = "0.1.0"
+description = "Diagnostics and reference configs for LiDAR SLAM (LIO-SAM, Cartographer, RTAB-Map)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Pratyush Vatsa" }]
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+slam-doctor = "slamkit.doctor:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# The ROS 2 Humble `launch_testing` pytest plugins are built against pytest 6
+# and raise PluginValidationError under pytest >= 8. slamkit's tests do not use
+# them, so disable them here; the flags are harmless when ROS is not installed.
+addopts = "-p no:launch_testing -p no:launch_ros"

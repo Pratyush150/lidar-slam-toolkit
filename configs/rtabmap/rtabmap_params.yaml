@@ -1,0 +1,290 @@
+# =============================================================================
+# RTAB-Map (rtabmap_slam/rtabmap) -- annotated reference parameters
+# =============================================================================
+# Configuration for a 3D LiDAR + IMU setup using ICP odometry and ICP-based
+# loop closure. RTAB-Map has ~400 parameters; these are the ones that actually
+# decide whether your map is good, plus what breaks when each is wrong.
+#
+# Two things to understand before tuning anything:
+#
+# 1. RTAB-Map does NOT compute odometry inside the `rtabmap` node. It consumes
+#    odometry. You supply it from wheel encoders, from `rtabmap_odom/icp_odometry`,
+#    or from a LiDAR-inertial front end such as LIO-SAM. If your map is drifting,
+#    the odometry is drifting -- tune the odometry node, not this one.
+#
+# 2. RTAB-Map's loop closure is appearance-based by default (bag of words over
+#    camera features). With LiDAR only, that machinery is unused and loop
+#    closure falls back to proximity detection plus ICP, which is much weaker.
+#    If loop closure "never fires" on a LiDAR-only setup, this is why -- turn on
+#    RGBD/ProximityBySpace and give it a realistic radius.
+#
+# Note the two namespaces below. Plain lower_case names (frame_id, approx_sync)
+# are ROS node parameters. Names with a slash (Icp/VoxelSize) are RTAB-Map
+# library parameters, passed through as strings -- which is why every one of
+# their values is quoted. Passing an unquoted number to a Slash/Parameter is a
+# common cause of "parameter not applied" with no error.
+# =============================================================================
+
+rtabmap:
+  ros__parameters:
+
+    # -------------------------------------------------------------------------
+    # ROS node parameters
+    # -------------------------------------------------------------------------
+    # The robot body frame. Everything is mapped relative to this.
+    # WRONG: the map is built around the sensor instead of the robot, so every
+    # navigation goal is offset by the sensor mount.
+    frame_id: "base_link"
+
+    # Odometry frame. Leave empty to take odometry from the /odom topic; set it
+    # to have RTAB-Map read odometry from TF instead.
+    odom_frame_id: ""
+
+    # Global map frame.
+    map_frame_id: "map"
+
+    # Input selection. Exactly one geometry source should be enabled.
+    # WRONG (subscribe_depth true with no depth camera): the sync policy waits
+    # forever for a message that never arrives and NOTHING is processed. The
+    # node looks alive and does nothing. This is the single most common
+    # RTAB-Map startup failure.
+    subscribe_depth: false
+    subscribe_rgb: false
+    subscribe_scan: false
+    subscribe_scan_cloud: true
+    subscribe_odom_info: false
+
+    # Message synchronisation. Use approximate sync unless every input is
+    # hardware-triggered from the same clock.
+    # WRONG (approx_sync false with independently stamped sensors): the exact
+    # sync policy never finds a matching set and no callback ever fires.
+    approx_sync: true
+
+    # Slack the approximate sync policy allows, seconds. 0 = automatic.
+    # WRONG (too small with a 10 Hz LiDAR and a 200 Hz IMU): messages are
+    # dropped and the effective update rate collapses.
+    approx_sync_max_interval: 0.0
+
+    # Depth of the input queues.
+    # WRONG (too small on a busy machine): messages are dropped under load and
+    # the map develops gaps exactly where the CPU spiked.
+    queue_size: 30
+
+    # Wait for a valid TF before processing, seconds.
+    wait_for_transform: 0.3
+
+    # Start from an empty database on every launch.
+    # WRONG (false when you meant to start clean): RTAB-Map silently loads the
+    # previous session and tries to localise inside an old map. The symptom is
+    # a map that jumps to somewhere you have never been.
+    Mem/IncrementalMemory: "true"
+    database_path: "~/.ros/rtabmap.db"
+
+    # Publish the map->odom correction on TF.
+    publish_tf: true
+
+    # -------------------------------------------------------------------------
+    # Core rate and memory
+    # -------------------------------------------------------------------------
+    # How often a new node is added to the graph, Hz. 1 Hz is the RTAB-Map
+    # default and is deliberately low -- the graph is for loop closure, not for
+    # odometry.
+    # WRONG (too high): the database grows fast, optimisation slows, and RAM
+    # climbs until the working memory manager starts evicting nodes.
+    # WRONG (too low, e.g. 0.2, on a fast robot): consecutive nodes are far
+    # apart, so proximity detection and ICP have poor overlap and loop closure
+    # stops working.
+    Rtabmap/DetectionRate: "1.0"
+
+    # Seconds of processing time allowed per cycle; nodes are moved out of
+    # working memory to stay under it. 0 = unlimited.
+    # WRONG (0 on an embedded target): RTAB-Map keeps everything in RAM and is
+    # eventually OOM-killed on a long run.
+    Rtabmap/TimeThr: "0"
+
+    # Maximum nodes kept in working memory. 0 = unlimited.
+    Rtabmap/MemoryThr: "0"
+
+    # Publish the assembled statistics (needed by rtabmap_viz).
+    Rtabmap/PublishStats: "true"
+
+    # -------------------------------------------------------------------------
+    # Registration strategy
+    # -------------------------------------------------------------------------
+    # 0 = visual features, 1 = ICP, 2 = visual + ICP.
+    # WRONG (0 on a LiDAR-only rig): there are no visual features to register
+    # with, so every loop candidate is rejected and loop closure never fires.
+    Reg/Strategy: "1"
+
+    # Force 3-DoF (x, y, yaw) registration. Set true ONLY for a strictly planar
+    # ground robot.
+    # WRONG (true on a drone or a robot on a ramp): z, roll and pitch are forced
+    # to zero, the map flattens, and the trajectory is wrong the moment the
+    # ground is not level.
+    # WRONG (false on a planar robot in a feature-poor building): the extra
+    # three degrees of freedom are unconstrained and the map slowly tilts.
+    Reg/Force3DoF: "false"
+
+    # -------------------------------------------------------------------------
+    # ICP
+    # -------------------------------------------------------------------------
+    # Voxel size applied before ICP, metres.
+    # WRONG (too large): thin structures vanish, the ICP normal estimate gets
+    # noisy, and registration becomes unreliable in corridors.
+    # WRONG (too small): ICP takes longer than the detection period and the
+    # node falls behind real time.
+    Icp/VoxelSize: "0.15"
+
+    # Points downsampled to keep at most this many. 0 = no limit.
+    Icp/DownsamplingStep: "1"
+
+    # Maximum distance between corresponding points, metres. This is the single
+    # most influential ICP parameter.
+    # WRONG (too small): ICP cannot bridge the initial pose error, so it fails
+    # to converge and rejects real loops.
+    # WRONG (too large): points are matched across different surfaces and ICP
+    # confidently converges to a wrong pose -- a false loop closure that
+    # destroys the map.
+    Icp/MaxCorrespondenceDistance: "0.5"
+
+    # Point-to-plane ICP instead of point-to-point. Almost always better for
+    # LiDAR: it lets points slide along surfaces, which is exactly the freedom
+    # a planar scene has.
+    # WRONG (false on structured indoor scans): convergence is slower and the
+    # solution locks onto whichever points happened to line up.
+    Icp/PointToPlane: "true"
+
+    # Neighbours used for the normal estimate in point-to-plane ICP.
+    # WRONG (too small): noisy normals, and point-to-plane becomes worse than
+    # point-to-point.
+    Icp/PointToPlaneK: "10"
+    Icp/PointToPlaneRadius: "0.0"
+
+    Icp/Iterations: "30"
+    Icp/Epsilon: "0.001"
+
+    # Fraction of points that must find a correspondence for the result to be
+    # accepted, 0..1. This is the loop-closure accept/reject gate.
+    # WRONG (too high, e.g. 0.5, in a cluttered scene): every loop is rejected
+    # and loop closure never fires.
+    # WRONG (too low, e.g. 0.05): garbage registrations are accepted.
+    Icp/CorrespondenceRatio: "0.2"
+
+    # Fraction of worst correspondences trimmed as outliers (libpointmatcher).
+    Icp/PMOutlierRatio: "0.7"
+
+    # Use libpointmatcher instead of PCL's ICP. Faster and more robust for
+    # LiDAR-sized clouds.
+    Icp/Strategy: "1"
+
+    # -------------------------------------------------------------------------
+    # Loop closure and proximity detection
+    # -------------------------------------------------------------------------
+    # Detect loops by spatial proximity rather than by appearance. THIS IS THE
+    # ONE THAT MATTERS ON A LIDAR-ONLY SETUP.
+    # WRONG (false without a camera): no loop closure mechanism is active at
+    # all, so drift is unbounded and you will not see a single constraint.
+    RGBD/ProximityBySpace: "true"
+    RGBD/ProximityByTime: "false"
+
+    # Radius within which proximity loop candidates are considered, metres.
+    # WRONG (smaller than your accumulated drift): the true match is outside the
+    # radius, so the loop genuinely cannot be found. Measure your drift first --
+    # slamkit.drift.revisit_consistency() -- and set this above it.
+    # WRONG (much larger than the drift): many spurious candidates, each costing
+    # an ICP run, and a higher chance of a false positive.
+    RGBD/LocalRadius: "5.0"
+    RGBD/ProximityMaxGraphDepth: "50"
+    RGBD/ProximityPathMaxNeighbors: "10"
+
+    # Reject an optimisation whose loop constraint error exceeds this ratio of
+    # the link's own variance. This is the guard against a false loop folding
+    # the map.
+    # WRONG (0, i.e. disabled): one bad ICP result and the map is destroyed in a
+    # single optimisation. Leave the guard on.
+    RGBD/OptimizeMaxError: "3.0"
+
+    # Minimum motion before a new node is created. Complements DetectionRate.
+    # WRONG (too large): a fast turn produces no node, so the turn is
+    # unconstrained and the map ghosts at the corner.
+    RGBD/LinearUpdate: "0.1"
+    RGBD/AngularUpdate: "0.1"
+
+    # Keep publishing the map while stationary.
+    RGBD/CreateOccupancyGrid: "true"
+
+    # Graph optimiser: 0 = TORO, 1 = g2o, 2 = GTSAM.
+    # WRONG (an optimiser that was not compiled in): RTAB-Map silently falls
+    # back to another one, so your tuning of it has no effect.
+    Optimizer/Strategy: "1"
+    Optimizer/Iterations: "20"
+    Optimizer/Epsilon: "0.0"
+    # Optimise from the graph's root rather than incrementally.
+    Optimizer/Robust: "true"
+    # Include the loop-closure variance in the optimisation. Needed for the
+    # robust kernel to work at all.
+    Optimizer/VarianceIgnored: "false"
+
+    # -------------------------------------------------------------------------
+    # Visual features -- only relevant if you also have a camera
+    # -------------------------------------------------------------------------
+    # Maximum features extracted per image.
+    # WRONG (too low): the vocabulary is too sparse for reliable appearance-
+    # based loop closure.
+    Kp/MaxFeatures: "500"
+    Kp/DetectorStrategy: "6"        # 6 = GFTT/BRIEF, a good CPU-only default
+
+    # Minimum inliers for a visual loop closure to be accepted.
+    # WRONG (too low): false loop closures between visually similar corridors.
+    Vis/MinInliers: "20"
+    Vis/InlierDistance: "0.1"
+
+    # Similarity above which a new node is merged into the previous one
+    # (rehearsal). Stops a stationary robot from filling the database.
+    # WRONG (too low): genuinely new places get merged into old ones and the map
+    # collapses onto itself.
+    Mem/RehearsalSimilarity: "0.6"
+
+    # Keep the raw cloud in the database. Needed to export a dense map, costs
+    # a lot of disk.
+    Mem/BinDataKept: "true"
+    # Reduce stored scans to their voxelised form.
+    Mem/LaserScanVoxelSize: "0.05"
+
+    # -------------------------------------------------------------------------
+    # Occupancy grid output
+    # -------------------------------------------------------------------------
+    # Build the 2D grid from the point cloud rather than from a 2D scan.
+    Grid/FromDepth: "false"
+    Grid/CellSize: "0.05"
+    # Points above this height are obstacles, below it are ground candidates.
+    # WRONG (too low): the floor is classified as obstacle and the entire map is
+    # occupied -- navigation then refuses to plan anywhere.
+    Grid/MaxObstacleHeight: "2.0"
+    Grid/MaxGroundHeight: "0.15"
+    # Segment the ground plane by normal direction rather than by height alone.
+    # Turn this on if the ground is not flat.
+    Grid/NormalsSegmentation: "true"
+    Grid/MaxGroundAngle: "30"
+    Grid/ClusterRadius: "0.2"
+    Grid/MinClusterSize: "10"
+    # Ray-trace free space between the sensor and each hit.
+    Grid/RayTracing: "true"
+    Grid/3D: "false"
+    Grid/RangeMax: "20.0"
+
+    # -------------------------------------------------------------------------
+    # ICP odometry (rtabmap_odom/icp_odometry) -- for reference
+    # -------------------------------------------------------------------------
+    # These belong on the icp_odometry node, not on rtabmap, and are listed here
+    # because that node is where LiDAR-only drift is actually decided.
+    #
+    #   Odom/Strategy: "0"                  # 0 = frame-to-map, 1 = frame-to-frame
+    #   OdomF2M/ScanSubtractRadius: "0.1"   # radius for adding new points to the map
+    #   OdomF2M/ScanMaxSize: "15000"        # local map size; bigger = more stable,
+    #                                       # slower, and more prone to including
+    #                                       # moving objects
+    #   Odom/ScanKeyFrameThr: "0.4"         # correspondence ratio below which a new
+    #                                       # keyframe is created; too high and the
+    #                                       # local map never updates in a corridor
+    #   Icp/VoxelSize: "0.15"               # same trade-off as above

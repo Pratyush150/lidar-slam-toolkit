@@ -1,0 +1,116 @@
+# =============================================================================
+# Sensor profile: Velodyne VLP-16 ("Puck")
+# =============================================================================
+# Starting point, not a tuned configuration. Verify every field against YOUR
+# driver version before trusting it -- the point-type and field names changed
+# between velodyne_pointcloud releases and that is exactly where deskewing
+# breaks.
+# =============================================================================
+
+sensor:
+  name: "Velodyne VLP-16"
+  type: "spinning, 16 beam, 905 nm"
+
+  # Beams. This is LIO-SAM's N_SCAN and the row count of the range image.
+  ring_count: 16
+
+  # Vertical field of view: +/-15 deg, 2.0 deg between adjacent beams.
+  # CONSEQUENCE: with the sensor mounted horizontally at 1 m in a 2.5 m wide
+  # corridor, the floor is only reachable at grazing angles. Vertical
+  # observability indoors is genuinely poor -- slamkit.degeneracy will show a
+  # weak Z score and it is not a bug in the analysis.
+  vertical_fov_deg: [-15.0, 15.0]
+  vertical_resolution_deg: 2.0
+
+  # Configurable 5-20 Hz. 10 Hz is the default and what almost every config
+  # assumes.
+  scan_rate_hz: 10.0
+
+  # Azimuth resolution depends on the rotation rate: 0.1 deg at 5 Hz, 0.2 deg
+  # at 10 Hz, 0.4 deg at 20 Hz. Horizon_SCAN = 360 / azimuth_resolution.
+  azimuth_resolution_deg: 0.2
+  horizontal_samples: 1800
+
+  points_per_second: 300000        # single return
+  range_m: [0.5, 100.0]
+  range_accuracy_m: 0.03
+
+  # ---------------------------------------------------------------------------
+  # Per-point fields -- the part that breaks deskewing
+  # ---------------------------------------------------------------------------
+  point_fields:
+    ring:
+      name: "ring"
+      datatype: "uint16"
+      note: "Beam index 0-15, ordered by firing sequence, NOT by elevation.
+             Ring 0 is the lowest beam in the standard driver but do not
+             assume that -- check by colouring the cloud by ring in RViz."
+    timestamp:
+      name: "time"
+      datatype: "float32"
+      units: "seconds"
+      datum: "relative to the start of the sweep"
+      note: |
+        Present only when the driver is configured for the XYZIRT point type.
+        Older velodyne_pointcloud builds publish PointXYZIR with NO time field.
+
+        GOTCHA: some driver versions emit NEGATIVE relative times (the sweep is
+        stamped at its END, so points are at -0.1 .. 0 s). Both conventions
+        exist in the wild. slamkit.cloud.detect_timestamp_format() reports
+        `negative_offsets` for exactly this reason. If your deskewing makes the
+        smear worse instead of better, you have the sign backwards.
+
+# -----------------------------------------------------------------------------
+# THE VLP-16 GOTCHA
+# -----------------------------------------------------------------------------
+# DUAL RETURN MODE SILENTLY DOUBLES YOUR POINT COUNT.
+#
+# In dual-return mode the sensor reports both the strongest and the last return
+# for each beam, so a "1800 x 16" sweep arrives with up to 57,600 points instead
+# of 28,800. LIO-SAM's range-image projection uses N_SCAN and Horizon_SCAN to
+# index points into a fixed grid; the extra returns land on cells that are
+# already occupied and overwrite them in arrival order.
+#
+# Symptom: the map looks noisy and "thick", edge features are unstable, and the
+# odometry is jittery in a way that no amount of leaf-size tuning fixes. It is
+# most obvious near vegetation and glass, where dual returns are most common.
+#
+# Check: `ros2 topic echo --once /velodyne_points --field width` and compare
+# against ring_count * horizontal_samples. If it is about double, you are in
+# dual-return mode.
+#
+# Fix: set the sensor's return mode to Strongest (or Last) in the web
+# interface at http://192.168.1.201, or handle both returns explicitly.
+#
+# SECOND GOTCHA: TIMESTAMPING.
+# Without a PPS + NMEA feed the VLP-16's internal clock free-runs and its
+# reported timestamps are microseconds-past-the-hour from its own oscillator.
+# The ROS driver then either uses that (and you get an offset of up to an hour)
+# or overwrites it with host time (and you get transport jitter in your stamps).
+# Check which your driver does. slamkit.timesync.detect_jitter() on the scan
+# stamps will tell you: a real spinning motor is stable to well under 1% of the
+# nominal period, so several milliseconds of jitter means host stamping.
+# -----------------------------------------------------------------------------
+
+lio_sam:
+  sensor: velodyne
+  N_SCAN: 16
+  Horizon_SCAN: 1800
+  downsampleRate: 1
+  lidarMinRange: 1.0          # clears the robot body and the near-field bloom
+  lidarMaxRange: 100.0
+  # 16 beams is not many. Do not raise these leaf sizes to "speed things up";
+  # you will run out of features first.
+  odometrySurfLeafSize: 0.4
+  mappingCornerLeafSize: 0.2
+  mappingSurfLeafSize: 0.4
+  edgeFeatureMinValidNum: 10
+  surfFeatureMinValidNum: 100
+
+cartographer_3d:
+  # 16 beams gives a sparse cloud; a coarser high_resolution avoids empty voxels.
+  TRAJECTORY_BUILDER_3D.submaps.high_resolution: 0.10
+  TRAJECTORY_BUILDER_3D.submaps.low_resolution: 0.45
+  TRAJECTORY_BUILDER_3D.min_range: 1.0
+  TRAJECTORY_BUILDER_3D.max_range: 60.0
+  options.num_subdivisions_per_laser_scan: 10

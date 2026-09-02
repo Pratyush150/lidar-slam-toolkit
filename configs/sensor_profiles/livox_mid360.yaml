@@ -1,0 +1,137 @@
+# =============================================================================
+# Sensor profile: Livox Mid-360
+# =============================================================================
+# A non-repetitive-scanning LiDAR. Almost everything you know about configuring
+# a spinning LiDAR is wrong here, starting with "ring count".
+# =============================================================================
+
+sensor:
+  name: "Livox Mid-360"
+  type: "non-repetitive scanning (risley prism), 905 nm"
+
+  # THERE ARE NO RINGS. The beam traces a rosette pattern that never repeats,
+  # so there is no meaningful "ring" index and no row-column range image.
+  ring_count: null
+  ring_field_available: false
+  note_on_rings: |
+    LIO-SAM's Velodyne and Ouster code paths build a fixed N_SCAN x Horizon_SCAN
+    range image and compute curvature along a ring. Feed them Livox data and you
+    get either a crash on the missing `ring` field or a cloud that silently
+    projects onto one row.
+
+    Options, in order of how well they work:
+      1. Use a Livox-specific fork/branch (LIO-SAM has a `sensor: livox` path;
+         FAST-LIO and Point-LIO are designed for this pattern).
+      2. Synthesise ring indices from elevation angle
+         (slamkit.cloud.assign_rings) and accept that the "rings" are fictional
+         and the curvature along them is meaningless.
+      3. Accumulate several frames before matching, which is what the
+         non-repetitive pattern is designed for.
+
+  # 360 deg horizontal, -7 to +52 deg vertical.
+  # The asymmetric vertical FOV is deliberate: it is aimed upward for indoor
+  # robots. CONSEQUENCE: mounted flat, it sees the ceiling well and the floor
+  # barely at all. If you need ground-plane extraction, tilt it forward.
+  horizontal_fov_deg: 360.0
+  vertical_fov_deg: [-7.0, 52.0]
+
+  # Frame rate; the point pattern within a frame does not repeat between frames.
+  scan_rate_hz: 10.0
+  points_per_second: 200000
+  points_per_frame: 20000          # approximately, at 10 Hz
+
+  range_m: [0.1, 70.0]             # 40 m at 10% reflectivity, 70 m at 80%
+
+  builtin_imu:
+    model: "BMI088"
+    rate_hz: 200
+    frame: "livox_frame (see the driver's extrinsic parameters)"
+    note: |
+      200 Hz, which is genuinely usable for LiDAR-inertial odometry -- better
+      than the OS1's built-in 100 Hz part. The IMU is NOT at the LiDAR optical
+      centre; the offset is small but non-zero and is documented in the user
+      manual. Put it in extrinsicTrans rather than assuming zero.
+
+  # ---------------------------------------------------------------------------
+  # Per-point fields
+  # ---------------------------------------------------------------------------
+  message_formats:
+    custom_msg:
+      type: "livox_ros_driver2/msg/CustomMsg"
+      timestamp_field: "offset_time"
+      datatype: "uint32"
+      units: "nanoseconds"
+      datum: "relative to CustomMsg.timebase"
+      note: "The native format. Carries per-point offset_time, line index and
+             tag bits. Only Livox-aware SLAM front ends consume it."
+    pointcloud2:
+      type: "sensor_msgs/msg/PointCloud2"
+      timestamp_field: "timestamp"
+      datatype: "float64"
+      units: "seconds"
+      datum: "ABSOLUTE (UNIX epoch), not relative to the frame"
+      note: |
+        Selected with the driver's xfer_format parameter (0 = CustomMsg,
+        1 = PointCloud2). The PointCloud2 form is more compatible but the
+        timestamp datum is ABSOLUTE, unlike Velodyne and Ouster which are both
+        relative to the sweep start.
+
+        GOTCHA: a deskewing stage written for Velodyne will subtract nothing,
+        multiply an epoch timestamp of ~1.7e9 by a velocity, and throw the cloud
+        out of the solar system -- or, if it clamps, do nothing at all.
+        slamkit.cloud.detect_timestamp_format() distinguishes absolute from
+        relative by magnitude and will tell you which one you actually have.
+
+# -----------------------------------------------------------------------------
+# THE MID-360 GOTCHA
+# -----------------------------------------------------------------------------
+# A SINGLE FRAME IS SPARSE AND NON-UNIFORM.
+#
+# The non-repetitive pattern means coverage builds up over time: one 100 ms
+# frame is a thin rosette with large gaps, and the gaps are in a different place
+# in the next frame. Integrate for a second and the coverage is excellent.
+#
+# Consequences you will actually hit:
+#   * Plane fitting and normal estimation on a single frame are unreliable --
+#     the local neighbourhood of a point may be a line rather than a patch. Use
+#     a larger k, or accumulate frames first.
+#   * Anything that assumes a fixed point count per frame will misbehave.
+#   * Degeneracy analysis on one frame is noisy for the same reason. Accumulate
+#     a few frames (or lower the voxel size) before trusting the numbers from
+#     slamkit.degeneracy on Livox data.
+#
+# SECOND GOTCHA: NETWORK CONFIGURATION.
+# The Mid-360 is Ethernet with a static IP derived from its serial number, and
+# livox_ros_driver2 needs a JSON config file listing the sensor IP, the host IP
+# and the extrinsic. Get the host IP wrong and the driver starts, prints
+# nothing alarming, and publishes an empty topic. Check with `ros2 topic hz`
+# before you debug anything else.
+#
+# THIRD GOTCHA: THE DRIVER APPLIES AN EXTRINSIC OF ITS OWN.
+# The driver's JSON config has its own extrinsic_parameter block (roll/pitch/yaw
+# in DEGREES, x/y/z in MILLIMETRES -- note both units differ from ROS
+# convention). If you set a mount angle there AND in your SLAM config, it is
+# applied twice. slamkit.extrinsics.check_degrees_as_radians() and
+# check_translation_magnitude() exist because of exactly this class of mistake.
+# -----------------------------------------------------------------------------
+
+lio_sam:
+  # Requires a build with the Livox path enabled. Verify your fork supports it
+  # before assuming these do anything.
+  sensor: livox
+  N_SCAN: 4                   # the driver's "line" count, not a real ring count
+  Horizon_SCAN: 6000          # a synthetic column count for the range image
+  downsampleRate: 1
+  lidarMinRange: 0.5          # the near field is usable, unlike a spinning unit
+  lidarMaxRange: 70.0
+  odometrySurfLeafSize: 0.2   # denser cloud than a VLP-16, so a finer leaf pays
+  mappingCornerLeafSize: 0.1
+  mappingSurfLeafSize: 0.2
+  imuFrequency: 200
+
+notes:
+  alternatives: |
+    FAST-LIO2 and Point-LIO were written around this scan pattern and generally
+    work better on it out of the box than a Velodyne-oriented pipeline that has
+    been coerced into accepting Livox data. If you are starting a Livox project
+    from scratch, start there.
