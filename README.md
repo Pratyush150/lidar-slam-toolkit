@@ -21,6 +21,21 @@ This repo is the toolkit for finding out which one it is:
 
 ---
 
+## Screenshots
+
+Each image is the unedited terminal output of the command named under it.
+
+![Ranked terminal report listing three critical SLAM findings with symptoms and fixes](docs/screenshots/slam-doctor-ranked-diagnosis.png)
+The top of `slam-doctor --demo` on the synthetic dataset with four defects deliberately injected: the three critical findings, each with the measured number, the symptom as it shows up in RViz, and the fix.
+
+![Terminal output verifying a LiDAR to IMU extrinsic and catching two classic configuration bugs](docs/screenshots/extrinsic-verification.png)
+`python3 examples/verify_extrinsic.py` recovering a LiDAR-to-IMU rotation from 399 paired motions, then catching the same matrix entered transposed and the same angles pasted as degrees into a radians field.
+
+![Terminal output with eight passing checks against a bag description and an extrinsic file](docs/screenshots/bag-and-extrinsic-check.png)
+`slam-doctor --bag examples/baginfo_example.json --extrinsic examples/extrinsic_example.json --all` on the example files in this repo: topics checked by message type with their rates and message counts, then the extrinsic sanity checks, with `--all` showing what passed.
+
+---
+
 ## Quickstart
 
 ```bash
